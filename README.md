@@ -54,6 +54,7 @@ python scripts/deploy.py --environment /path/to/wberri_v1.8_restart
 部署会核对文件内容并记录 Git 提交，不使用 editable install。脚本拒绝部署到其他名称的环境。
 运行时应离开仓库根目录，避免当前目录中的源码遮蔽环境安装。
 
+- [验收报告：首轮专项、真实 CrSe 与 Ray](docs/validation.md)
 - [检查点格式与兼容边界](docs/checkpoint-format.md)
 - [生产切换、测试和回滚](docs/operations.md)
 - 小模型测试：`python -m unittest discover -v -s /path/to/repo/tests`

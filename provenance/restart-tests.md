@@ -49,3 +49,10 @@ first K-list. A durable initializing manifest now permits restart after either
 the initial metadata rename or its manifest publication is interrupted. Both
 boundaries are tested, with all 84 points computed exactly once after recovery.
 The updated development-source suite passed **22 tests in 12.083 s**.
+
+Final compute-node acceptance of committed implementation
+`dc2784eac88acac5723f4155e83206faa3dd5197`: **22 tests passed in 12.850 s**.
+The untouched-original comparison and real-Ray regression also passed. Scheduler
+state was COMPLETED with exit code 0 and the expected success marker. All 94
+original package file hashes remained unchanged; the three custom physics files
+also matched the baseline in the new environment.

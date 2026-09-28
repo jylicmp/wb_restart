@@ -19,12 +19,12 @@ import pickle
 import glob
 from termcolor import cprint
 import warnings
-from .utility import remove_dir
 from .data_K import get_data_k
 from .grid import exclude_equiv_points, Path, Grid, GridTetra
 from .parallel import get_ray_cpus_count
 from .result.tabresult import TABresult
 from .result import ResultDict
+from .restart import Checkpoint, configuration, locked_run, choose_iteration, validate_result
 
 
 def print_progress(count, total, t0, tprev, progress_step_time):
@@ -128,6 +128,7 @@ def process(paralfunc,
     return len(dK_list), result_sum
 
 
+@locked_run
 def run(
         system,
         grid,
@@ -150,6 +151,8 @@ def run(
         adpt_fac=1,
         print_progress_step_time=5,
         print_progress_step_percent=1,
+        restart_recover=False,
+        restart_on_corrupt="error",
 ):
     """
     The function to run a calculation. Substitutes the old (obsolete and removed) `integrate()` and `tabulate()`
@@ -184,7 +187,13 @@ def run(
     file_Klist_path : str or None
         path to a directory where the K-point resolved results and factors will be stored. 
             If `None` - the directory will be `_tmp_wb` in the current working directory. 
-            The directory will be created if it does not exist, and removed if it exists and `restart=False`
+            Nonempty directories are never removed implicitly. Use a new directory for a fresh run.
+    restart_recover : bool
+        Explicitly reconstruct a missing legacy K-list for regular-grid iteration 0.
+        Legacy files do not prove coordinate/configuration identity; verify inputs.
+    restart_on_corrupt : {"error", "recompute"}
+        Reject corrupt point files, or quarantine and recompute them. Scientific
+        configuration mismatches always fail. Missing files are recomputed.
     restart : bool
         if `True` : reads restart information from `file_Klist` and starts from there
     Klist_part : int
@@ -211,6 +220,10 @@ def run(
     -----
     Results are also printed to ASCII files
     """
+    if restart_recover and not restart:
+        raise ValueError("restart_recover requires restart=True")
+    if restart_on_corrupt not in ("error", "recompute"):
+        raise ValueError("restart_on_corrupt must be error or recompute")
     assert isinstance(parallel, bool), "parallel should be True or False"
     if parallel:
         try:
@@ -253,7 +266,7 @@ def run(
                     f"Calculation on Grid is running, but calculator `{key}` is not compatible with a Grid")
         print("All calculators are compatible")
 
-    if dump_results:
+    if dump_results or restart:
         allow_restart = True
     if file_Klist_path is None:
         file_Klist_path = "_tmp_wb"
@@ -291,39 +304,6 @@ def run(
                 result = _system.pointgroup.symmetrize(result)
             return result
 
-    if restart:
-        fr = open(file_Klist, "rb")
-        K_list = []
-        with open(file_Klist, "rb") as fr:
-            while True:
-                try:
-                    K_list += pickle.load(fr)
-                except EOFError:
-                    print(f"Finished reading Klist from file {file_Klist}")
-                    break
-            print(f"{len(K_list)} K-points were read from {file_Klist}")
-        nk_prev = len(K_list)
-        start_iter, factors = read_factors(file_Klist_path=file_Klist_path, iter=restart_iteration)
-        factors = np.hstack([factors, np.zeros(len(K_list) - len(factors))])  # If we have more K-points than factors, add zeros for the new ones
-        for ik, (Kp, fac) in enumerate(zip(K_list, factors)):
-            Kp.set_factor(fac)
-        result_all = sum(Kp.get_result_factor()  for Kp in K_list)
-    else:
-        K_list = grid.get_K_list(use_symmetry=use_irred_kpt)
-        factors = np.array([Kp.factor for Kp in K_list])
-        print("Done, sum of weights:{}".format(sum(Kp.factor for Kp in K_list)))
-        start_iter = 0
-        nk_prev = 0
-        if allow_restart or dump_results:
-            remove_dir(file_Klist_path)
-            os.makedirs(file_Klist_path)
-            write_factors(file_Klist_path=file_Klist_path, factors=factors, iter=0)
-        result_all = None
-
-
-
-        # remove_file(file_Klist_factor_changed)
-
     if adpt_num_iter < 0:
         adpt_num_iter = -adpt_num_iter * np.prod(grid.div) / np.prod(adpt_mesh) / adpt_fac / 3
     adpt_num_iter = int(round(adpt_num_iter))
@@ -335,12 +315,33 @@ def run(
             adpt_mesh = [adpt_mesh] * 3
         adpt_mesh = np.array(adpt_mesh)
 
+    checkpoint = None
+    if allow_restart:
+        config = configuration(system, grid, calculators, parameters_K, use_irred_kpt,
+                               symmetrize, adpt_mesh, adpt_fac)
+        checkpoint = Checkpoint(file_Klist_path, config, calculators)
+    if restart:
+        start_iter, K_list, factors = checkpoint.load(grid, use_irred_kpt,
+                                                     restart_iteration, restart_recover)
+        result_all, restart_report = checkpoint.restore(K_list, restart_on_corrupt)
+        nk_prev = len(K_list)
+    else:
+        if checkpoint is not None:
+            checkpoint.fresh()
+        K_list = grid.get_K_list(use_symmetry=use_irred_kpt)
+        factors = np.array([Kp.factor for Kp in K_list])
+        print("Done, sum of weights:{}".format(factors.sum()))
+        start_iter = 0
+        nk_prev = 0
+        result_all = None
+
     counter = 0
     factors_old = None
 
     for i_iter in range(adpt_num_iter + 1):
-        for ik in range(nk_prev, len(K_list)):
-            K_list[ik].set_storage_path(get_Kpoint_storage_path(file_Klist_path=file_Klist_path, ik=ik))
+        if checkpoint is None:
+            for ik in range(nk_prev, len(K_list)):
+                K_list[ik].set_storage_path(get_Kpoint_storage_path(file_Klist_path=file_Klist_path, ik=ik))
         i_iter_global = i_iter + start_iter
         print("\n" + "#" * 60)
         print(f"Iteration {i_iter_global} out of {adpt_num_iter + start_iter} ")
@@ -348,13 +349,15 @@ def run(
             print("iteration {0} - {1} points. New points are:".format(i_iter + start_iter,
                                                                        len([K for K in K_list if K.result is None])))
             for i, K in enumerate(K_list):
-                if not K.evaluated:
+                if not K.was_evaluated_flag:
                     print(f" K-point {i} : {K} ")
+        if checkpoint is not None:
+            checkpoint.begin(i_iter_global, K_list)
         count_iter, result_sum_iter = process(
             paralfunc=paralfunc,
             K_list=K_list,
             parallel=parallel,
-            dump_results=dump_results,
+            dump_results=dump_results or allow_restart,
             store_results=allow_restart or adpt_num_iter > 0,
             progress_step_time=print_progress_step_time,
             progress_step_percent=print_progress_step_percent,
@@ -362,13 +365,6 @@ def run(
         counter += count_iter
 
         nk = len(K_list)
-        if allow_restart:
-            # append new (refined) k-points only
-            fw = open(file_Klist, "ab")
-            for ink in range(nk_prev, nk, Klist_part):
-                pickle.dump(K_list[ink:ink + Klist_part], fw)
-            fw.close()
-
         time0 = time()
 
         if (result_all is None):
@@ -377,17 +373,20 @@ def run(
             factors_old = factors
             factors = np.array([kp.factor for kp in K_list])
             factors_diff = factors[:len(factors_old)] - factors_old
-            factors_diff_dict = {i: fac for i, fac in enumerate(factors_diff) if abs(fac) > 1.e-8}
+            factors_diff_dict = {i: fac for i, fac in enumerate(factors_diff) if fac != 0}
             print(f"factors changed for old points : {factors_diff_dict} ")
-            result_all += result_sum_iter
+            if result_sum_iter is not None:
+                result_all += result_sum_iter
             result_all += sum(K_list[i].get_result() * fac for i, fac in factors_diff_dict.items())
-            if allow_restart:
-                write_factors(file_Klist_path=file_Klist_path, factors=factors, iter=i_iter_global)
 
         time1 = time()
         print("time1 = ", time1 - time0)
-        if not (restart and i_iter == 0):
-            result_all.savedata(prefix=fout_name, suffix=suffix, i_iter=i_iter + start_iter)
+        # Recreate output on recovery as well: interruption may have happened
+        # during output, or the checkpoint may have moved to another directory.
+        result_all.savedata(prefix=fout_name, suffix=suffix, i_iter=i_iter + start_iter)
+        if checkpoint is not None:
+            checkpoint.schema = validate_result(result_all, calculators)
+            checkpoint.complete(i_iter_global)
 
         if i_iter >= adpt_num_iter:
             break
@@ -445,18 +444,8 @@ def write_factors(file_Klist_path, factors, iter):
 
 
 def read_factors(file_Klist_path, iter):
-    if iter >= 0:
-        with open(os.path.join(file_Klist_path, f"factors_iter-{iter:08d}.npy"), 'rb') as f:
-            factors = np.load(f)
-        return iter, factors
-    else:
-        files = glob.glob(os.path.join(file_Klist_path, "factors_iter-*.npy"))
-        iter_indices = np.array([int(f.split("-")[-1].split(".")[0]) for f in files])
-        iter_index = iter_indices[-1] + iter + 1
-        if iter_index < 0:
-            iter_index = 0
-        else:
-            if iter_index not in iter_indices:
-                Warning(f"requested iteration {iter} (index {iter_index}) is not found in factors files, will try to use the closest previous one")
-                iter_index = iter_indices[iter_indices <= iter_index][-1]
-        return read_factors(file_Klist_path, iter_index)
+    files = glob.glob(os.path.join(file_Klist_path, "factors_iter-*.npy"))
+    indices = [int(os.path.basename(f).split("-")[-1].split(".")[0]) for f in files]
+    index = choose_iteration(indices, iter)
+    with open(os.path.join(file_Klist_path, f"factors_iter-{index:08d}.npy"), "rb") as f:
+        return index, np.load(f, allow_pickle=False)

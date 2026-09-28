@@ -35,6 +35,7 @@ class KpointBZ():
         self.result = None
         self.result_storage_path = result_storage_path
         self.res_dumped_flag = False
+        self.res_cleared_flag = False
         self.was_evaluated_flag = False
         self.NKFFT = np.copy(NKFFT)
         self.pointgroup = pointgroup
@@ -68,12 +69,19 @@ class KpointBZ():
     def dump_result(self):
         if self.res_dumped_flag:
             return
-        with open(self.result_storage_path, 'wb') as f:
-            pickle.dump(self.result, f)
+        if hasattr(self, 'restart_configuration'):
+            from ..restart import dump_point
+            dump_point(self)
+        else:
+            from ..restart import atomic_pickle
+            atomic_pickle(self.result_storage_path, self.result)
         self.result = None
         self.res_dumped_flag = True
 
     def get_dumped_result(self):
+        if hasattr(self, 'restart_configuration'):
+            from ..restart import load_point
+            return load_point(self)
         with open(self.result_storage_path, 'rb') as f:
             res = pickle.load(f)
         return res

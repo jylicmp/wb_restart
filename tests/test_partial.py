@@ -182,6 +182,23 @@ class PartialTests(unittest.TestCase):
         self.run_calc('old',restart=True,restart_iteration=0,partial_save_interval=900,partial_output_dir=self.root/'partial')
         self.assertTrue(self.latest('partial')[1]['complete'])
 
+    def test_readonly_missing_files_are_not_opened_again(self):
+        self.run_calc('full');store,points=self.load('full')
+        for point in points:Path(point.result_storage_path).unlink()
+        restartmod=importlib.import_module('wannierberri.restart')
+        with patch.object(restartmod,'load_point',side_effect=AssertionError('redundant missing-file read')):
+            total,report=store.restore(points,readonly=True)
+        self.assertIsNone(total);self.assertEqual(report['missing'],list(range(4)))
+
+    def test_changed_file_identity_mismatch_still_fails(self):
+        self.run_calc('full');store,points=self.load('full')
+        restartmod=importlib.import_module('wannierberri.restart')
+        def changed_identity(point):
+            with open(point.result_storage_path,'ab') as f:f.write(b'changed')
+            raise IncompatibleCheckpoint('wrong identity')
+        with patch.object(restartmod,'load_point',side_effect=changed_identity):
+            with self.assertRaises(IncompatibleCheckpoint):store.restore(points,readonly=True)
+
     def test_changing_file_is_excluded_from_readonly_sum(self):
         self.run_calc('full');store,points=self.load('full')
         restartmod=importlib.import_module('wannierberri.restart');original=restartmod.load_point

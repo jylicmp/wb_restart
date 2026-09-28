@@ -347,8 +347,13 @@ class Checkpoint:
                     except FileNotFoundError:
                         return None
                 before = signature() if readonly else None
+                if readonly and before is None:
+                    report['missing'].append(i)
+                    continue
                 try:
                     result = load_point(kp)
+                except IncompatibleCheckpoint:
+                    raise
                 except Exception:
                     if readonly and signature() != before:
                         report['unstable'].append(i)

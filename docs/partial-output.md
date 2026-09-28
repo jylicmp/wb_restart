@@ -73,3 +73,7 @@ with np.load(generation / 'tensors.npz', allow_pickle=False) as data:
 输出目录有单写入者锁并绑定配置指纹，不能在同一目录混用模型。设置 `WB_SOURCE`
 时，其父目录视为受保护的原任务树；输出也不能位于输入检查点内部或其祖先目录。
 部分输出模块不纳入科学配置指纹，旧版续算检查点无需迁移。
+
+验收证据见 [部分输出测试记录](../provenance/partial-output-tests.md)：33 项回归通过，
+实际 Ray 第 0 轮中断恢复及真实 CrSe 样本只读导出通过。真实样本原始/平滑汇总
+最大绝对误差均为 0；完整科学数据保留在私有验收目录。

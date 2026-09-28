@@ -247,6 +247,10 @@ class Checkpoint:
         entries = [p for p in self.path.iterdir() if p.name != '.restart.lock']
         if entries:
             raise RestartError(f'Refusing to erase nonempty checkpoint directory {self.path}; use restart=True or a new directory')
+        # Persist configuration before building/writing the first point list.
+        # No work is dispatched until begin() publishes complete metadata.
+        self.manifest['phase'] = 'initializing'
+        self._commit()
 
     def bind(self, points, legacy=False):
         for i, kp in enumerate(points):
@@ -270,6 +274,14 @@ class Checkpoint:
                 raise IncompatibleCheckpoint('Unsupported checkpoint format')
             if self.manifest['fingerprint'] != self.fingerprint or self.manifest['configuration'] != self.config:
                 raise IncompatibleCheckpoint('Model, grid, calculator, refinement or scientific source changed')
+            if self.manifest.get('phase') == 'initializing':
+                if self.manifest['iterations'] or any(self.path.glob('_Kp-*')):
+                    raise CorruptCheckpoint('Initializing checkpoint unexpectedly contains results or iterations')
+                choose_iteration([0], requested)
+                points = grid.get_K_list(use_symmetry=use_irred_kpt)
+                factors = np.array([p.factor for p in points])
+                self.bind(points)
+                return 0, points, factors
             it = choose_iteration(self.manifest['iterations'], requested)
             entry = self.manifest['iterations'][str(it)]
             filename = entry['metadata']
@@ -374,6 +386,7 @@ class Checkpoint:
         self.manifest['iterations'] = {i: e for i, e in self.manifest['iterations'].items() if int(i) < iteration}
         self.manifest['iterations'][str(iteration)] = {'metadata': name, 'sha256': sha256_file(self.path / name),
                                                        'phase': 'running', 'points': len(points)}
+        self.manifest.pop('phase', None)
         self._commit()
 
     def complete(self, iteration):

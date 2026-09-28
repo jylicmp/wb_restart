@@ -43,7 +43,8 @@ def main():
     cfg=load_config(args.config)
     manifest=args.checkpoint/'restart.json'
     if manifest.exists():
-        indices=json.loads(manifest.read_text())['iterations']
+        saved=json.loads(manifest.read_text())
+        indices=[0] if saved.get('phase')=='initializing' else saved['iterations']
     else:
         indices=[int(f.stem.split('-')[-1]) for f in args.checkpoint.glob('factors_iter-*.npy')]
     start=choose_iteration(indices,args.iteration)

@@ -43,3 +43,9 @@ once across attempts, and require saved legacy files to remain byte-identical.
 A repeated complete restart performs no computation. Raw and smoothed totals
 agree within rtol=1e-10, atol=1e-12. Final adaptive coordinates and weights agree
 exactly. All fixtures reside in disposable independent directories.
+
+A further boundary test exposed and fixed recovery before publication of the
+first K-list. A durable initializing manifest now permits restart after either
+the initial metadata rename or its manifest publication is interrupted. Both
+boundaries are tested, with all 84 points computed exactly once after recovery.
+The updated development-source suite passed **22 tests in 12.083 s**.

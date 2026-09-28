@@ -157,6 +157,28 @@ class IterationZeroTests(unittest.TestCase):
         with patch.object(runmod, 'get_data_k', side_effect=AssertionError('duplicate')):
             self.equal(self.run_calc('unmarked', restart=True))
 
+    def test_initial_metadata_and_manifest_publication_interruptions(self):
+        restart = importlib.import_module('wannierberri.restart')
+        replace = restart.os.replace
+        for boundary in ('metadata', 'manifest'):
+            with self.subTest(boundary=boundary):
+                def interrupted(source, destination):
+                    path = Path(destination)
+                    if ((boundary == 'metadata' and path.name.startswith('K_list-')) or
+                            (boundary == 'manifest' and path.name == 'restart.json' and path.exists())):
+                        raise RuntimeError('initial publication')
+                    return replace(source, destination)
+                name = 'publication-'+boundary
+                with patch.object(restart.os, 'replace', side_effect=interrupted):
+                    with self.assertRaisesRegex(RuntimeError, 'initial publication'):
+                        self.run_calc(name)
+                manifest = json.loads((self.root/name/'restart.json').read_text())
+                self.assertEqual(manifest['phase'], 'initializing')
+                calls = []
+                with self.record_computation(calls):
+                    self.equal(self.run_calc(name, restart=True))
+                self.assert_only_missing(calls, set())
+
 
 if __name__ == '__main__':
     unittest.main()

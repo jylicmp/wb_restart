@@ -6,6 +6,13 @@ immutable, checksummed pickle containing the K-point metadata and weight vector
 as one object. A generation is published before dispatch and marked complete only
 after output is written. Incomplete output is regenerated on restart.
 
+Before the first point list is generated, an `initializing` manifest records the
+configuration with no iterations. If interrupted before the first metadata
+generation is published, restart validates the configuration and regenerates the
+initial grid. This state must not contain any point results. An interruption
+before even this initial manifest is committed has no saved calculations to
+recover; use a new empty directory if a temporary file remains.
+
 Each new point result is an atomic pickle envelope containing its index, geometric
 identity, scientific configuration digest, and a checksummed result payload. New
 filenames include a geometry digest so historical branches cannot reuse another

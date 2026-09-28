@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import sys
+import tempfile
 import numpy as np
 import ray
 import wannierberri as wb
@@ -10,7 +11,7 @@ from model_fixture import setup
 root=Path(sys.argv[1]);root.mkdir(parents=True,exist_ok=True)
 s,g,c=setup()
 serial=wb.run(s,g,c,parallel=False,adpt_num_iter=2,fout_name=str(root/'serial'))
-ray.init(num_cpus=4,include_dashboard=False,_temp_dir=str(root/'ray'))
+ray.init(num_cpus=4,include_dashboard=False,_temp_dir=tempfile.mkdtemp(prefix='wbr-'),object_store_memory=512*1024**2)
 try:
     @ray.remote
     def worker_version():

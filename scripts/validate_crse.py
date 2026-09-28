@@ -11,6 +11,7 @@ from pathlib import Path
 import pickle
 import shutil
 import time
+import tempfile
 import numpy as np
 import ray
 import wannierberri as wb
@@ -68,7 +69,7 @@ def main():
     config=importlib.util.module_from_spec(spec);spec.loader.exec_module(config)
     cfg=config.build()
     grid=cfg['grid'];system=cfg['system'];calcs=cfg['calculators']
-    assert len(system.pointgroup)==6
+    assert system.pointgroup.size==6
     np.testing.assert_array_equal(grid.div,[155]*3)
     np.testing.assert_array_equal(grid.FFT,[11]*3)
     weight_path=args.source/'factors_iter-00000000.npy'
@@ -106,7 +107,7 @@ def main():
     del points;gc.collect()
     save()
     ray.init(num_cpus=args.cpus,include_dashboard=False,
-             _temp_dir=str(args.work/'ray'))
+             _temp_dir=tempfile.mkdtemp(prefix='wbr-'),object_store_memory=8*1024**3)
     try:
         rs,rg,rc=ray.put(system),ray.put(grid),ray.put(calcs)
         tasks={evaluate.remote(selected[i],rs,rg,rc):i for i in indices}

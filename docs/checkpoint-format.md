@@ -39,3 +39,9 @@ new checkpoint. Output prefixes and final iteration targets may change.
 Atomic writes use fsync, same-filesystem rename, and directory fsync. Unreferenced
 metadata generations or temporary files from a crash are harmless and are not
 automatically deleted. Metadata corruption fails closed; keep the backup.
+
+Weight corrections include every nonzero delta. The original 1.8 loop discarded
+deltas below 1e-8, which can leave an old point counted after deep refinement.
+This restart implementation applies those small deltas too; deeply refined
+results can therefore differ from the original buggy accumulation. The physical
+formula and refinement selection rule are unchanged.

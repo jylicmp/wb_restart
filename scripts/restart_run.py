@@ -3,6 +3,8 @@
 import argparse
 import importlib.util
 import json
+import os
+import tempfile
 from pathlib import Path
 import numpy as np
 import wannierberri as wb
@@ -34,6 +36,9 @@ def main():
     p.add_argument('--until-iteration',type=int,default=20)
     p.add_argument('--output',default='CrSe_Qorb_GaoXiao')
     p.add_argument('--serial',action='store_true')
+    p.add_argument('--ray-address',help='Explicit existing cluster address; default starts an isolated local cluster')
+    p.add_argument('--ray-cpus',type=int,help='Local Ray CPUs; defaults to SLURM_CPUS_PER_TASK or CPU affinity')
+    p.add_argument('--ray-object-store-gb',type=float,default=8)
     args=p.parse_args()
     cfg=load_config(args.config)
     manifest=args.checkpoint/'restart.json'
@@ -58,11 +63,24 @@ def main():
     if args.until_iteration<start:
         p.error('Final iteration precedes selected checkpoint')
     if not args.serial:
-        wb.ray_init()
-    wb.run(**cfg,restart=True,restart_recover=args.recover,restart_on_corrupt=args.on_corrupt,
-           restart_iteration=args.iteration,adpt_num_iter=args.until_iteration-start,
-           allow_restart=True,dump_results=True,file_Klist_path=str(args.checkpoint),
-           fout_name=args.output,parallel=not args.serial)
+        if args.ray_address:
+            wb.ray_init(address=args.ray_address)
+        else:
+            cpus=args.ray_cpus or int(os.environ.get('SLURM_CPUS_PER_TASK',
+                       len(os.sched_getaffinity(0)) if hasattr(os,'sched_getaffinity') else os.cpu_count()))
+            if cpus<1 or args.ray_object_store_gb<=0:
+                p.error('Ray CPU and object store limits must be positive')
+            wb.ray_init(address='local',num_cpus=cpus,include_dashboard=False,
+                        _temp_dir=tempfile.mkdtemp(prefix='wbr-'),
+                        object_store_memory=int(args.ray_object_store_gb*1024**3))
+    try:
+        wb.run(**cfg,restart=True,restart_recover=args.recover,restart_on_corrupt=args.on_corrupt,
+               restart_iteration=args.iteration,adpt_num_iter=args.until_iteration-start,
+               allow_restart=True,dump_results=True,file_Klist_path=str(args.checkpoint),
+               fout_name=args.output,parallel=not args.serial)
+    finally:
+        if not args.serial: wb.ray_shutdown()
+
 
 
 if __name__=='__main__': main()

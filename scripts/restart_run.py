@@ -29,7 +29,11 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',type=Path,required=True,help='Python file defining build() -> run kwargs')
     p.add_argument('--checkpoint',type=Path,required=True)
-    p.add_argument('--inspect',action='store_true',help='Read only; no checkpoint or output writes')
+    modes=p.add_mutually_exclusive_group()
+    modes.add_argument('--inspect',action='store_true',help='Read only; no checkpoint or output writes')
+    modes.add_argument('--export-partial',action='store_true',help='Export existing iteration-0 contributions without computing')
+    p.add_argument('--partial-interval',type=float,default=900,help='Iteration-0 snapshot interval in seconds; 0 disables')
+    p.add_argument('--partial-output',type=Path,help='Independent snapshot directory; required for --export-partial')
     p.add_argument('--recover',action='store_true',help='Allow reconstruction of legacy iteration 0')
     p.add_argument('--on-corrupt',choices=['error','recompute'],default='error')
     p.add_argument('--iteration',type=int,default=-1)
@@ -40,6 +44,13 @@ def main():
     p.add_argument('--ray-cpus',type=int,help='Local Ray CPUs; defaults to SLURM_CPUS_PER_TASK or CPU affinity')
     p.add_argument('--ray-object-store-gb',type=float,default=8)
     args=p.parse_args()
+    if not np.isfinite(args.partial_interval) or args.partial_interval<0:
+        p.error('Partial interval must be finite and nonnegative')
+    if args.export_partial and args.partial_output is None:
+        p.error('--export-partial requires --partial-output')
+    if args.partial_output is not None or (not args.inspect and args.partial_interval):
+        from wannierberri.partial import validate_output
+        args.partial_output=validate_output(args.partial_output or (args.output+'.partial'),args.checkpoint)
     cfg=load_config(args.config)
     manifest=args.checkpoint/'restart.json'
     if manifest.exists():
@@ -48,7 +59,9 @@ def main():
     else:
         indices=[int(f.stem.split('-')[-1]) for f in args.checkpoint.glob('factors_iter-*.npy')]
     start=choose_iteration(indices,args.iteration)
-    if args.inspect:
+    if args.export_partial and start!=0:
+        p.error('Partial export currently supports iteration 0 only; select --iteration 0')
+    if args.inspect or args.export_partial:
         mesh=cfg['adpt_mesh']
         if mesh is not None and np.max(mesh)>1:
             mesh=np.array([mesh]*3 if np.isscalar(mesh) else mesh)
@@ -56,9 +69,13 @@ def main():
                              cfg['use_irred_kpt'],cfg['symmetrize'],mesh,cfg['adpt_fac'])
         store=Checkpoint(args.checkpoint,config,cfg['calculators'])
         iteration,points,factors=store.load(cfg['grid'],cfg['use_irred_kpt'],args.iteration,args.recover)
-        _,report=store.restore(points,readonly=True)
+        total,report=store.restore(points,readonly=True)
         report.update(iteration=iteration,points=len(points),configuration=store.fingerprint,
                       legacy_provenance=store.manifest.get('legacy_provenance'))
+        if args.export_partial:
+            from wannierberri.partial import PartialWriter
+            with PartialWriter(args.partial_output,store.fingerprint,points,report=report,dynamic=True) as writer:
+                writer.publish(total)
         print(json.dumps(report,indent=2))
         return
     if args.until_iteration<start:
@@ -78,7 +95,8 @@ def main():
         wb.run(**cfg,restart=True,restart_recover=args.recover,restart_on_corrupt=args.on_corrupt,
                restart_iteration=args.iteration,adpt_num_iter=args.until_iteration-start,
                allow_restart=True,dump_results=True,file_Klist_path=str(args.checkpoint),
-               fout_name=args.output,parallel=not args.serial)
+               fout_name=args.output,parallel=not args.serial,
+               partial_save_interval=args.partial_interval,partial_output_dir=args.partial_output)
     finally:
         if not args.serial: wb.ray_shutdown()
 

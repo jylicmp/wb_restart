@@ -13,4 +13,5 @@ cd "$WB_OUTPUT_DIR"
 "$WB_ENV/bin/python" -B "$WB_REPO/scripts/restart_run.py" \
   --config "$WB_REPO/examples/crse_config.py" --checkpoint "$WB_CHECKPOINT" \
   --recover --on-corrupt recompute --until-iteration 20 \
-  --output "$WB_OUTPUT_DIR/CrSe_Qorb_GaoXiao"
+  --output "$WB_OUTPUT_DIR/CrSe_Qorb_GaoXiao" \
+  --partial-interval 900 --partial-output "$WB_OUTPUT_DIR/partial"

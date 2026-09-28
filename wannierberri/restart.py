@@ -90,7 +90,7 @@ def configuration(system, grid, calculators, parameters_K, use_irred_kpt, symmet
     # Freeze scientific implementation, excluding restart/dispatch-only edits.
     root = Path(__file__).parent
     code = {str(p.relative_to(root)): sha256_file(p) for p in sorted(root.rglob('*.py'))
-            if str(p.relative_to(root)) not in ('restart.py', 'run.py', 'grid/Kpoint.py')}
+            if str(p.relative_to(root)) not in ('restart.py', 'run.py', 'grid/Kpoint.py', 'partial.py')}
     return canonical({'system': state, 'grid': grid, 'calculators': calculators,
                       'parameters_K': parameters_K, 'use_irred_kpt': use_irred_kpt,
                       'symmetrize': symmetrize, 'adpt_mesh': adpt_mesh, 'adpt_fac': adpt_fac,
@@ -131,7 +131,7 @@ def locked_run(func):
         bound.apply_defaults()
         b = bound.arguments
         from .grid import Path as GridPath
-        enabled = (b['restart'] or b['allow_restart'] or b['dump_results']) and not isinstance(b['grid'], GridPath)
+        enabled = (b['restart'] or b['allow_restart'] or b['dump_results'] or b.get('partial_save_interval', 0)) and not isinstance(b['grid'], GridPath)
         if not enabled:
             return func(*args, **kwargs)
         import fcntl
@@ -332,7 +332,7 @@ class Checkpoint:
     def restore(self, points, on_corrupt='error', readonly=False):
         if on_corrupt not in ('error', 'recompute'):
             raise ValueError('restart_on_corrupt must be error or recompute')
-        report = {'valid': 0, 'missing': [], 'corrupt': [], 'weight_sum': float(sum(k.factor for k in points))}
+        report = {'valid': 0, 'missing': [], 'corrupt': [], 'weight_sum': float(sum(k.factor for k in points)), 'unstable': []}
         total = None
         for i, kp in enumerate(points):
             kp.result = None
@@ -340,7 +340,23 @@ class Checkpoint:
             kp.res_dumped_flag = False
             kp.res_cleared_flag = False
             try:
-                result = load_point(kp)
+                def signature():
+                    try:
+                        stat = os.stat(kp.result_storage_path)
+                        return stat.st_ino, stat.st_size, stat.st_mtime_ns
+                    except FileNotFoundError:
+                        return None
+                before = signature() if readonly else None
+                try:
+                    result = load_point(kp)
+                except Exception:
+                    if readonly and signature() != before:
+                        report['unstable'].append(i)
+                        continue
+                    raise
+                if readonly and signature() != before:
+                    report['unstable'].append(i)
+                    continue
                 schema = validate_result(result, self.calculators)
                 if self.schema is None:
                     self.schema = schema

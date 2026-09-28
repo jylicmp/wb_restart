@@ -12,6 +12,7 @@
 # ------------------------------------------------------------
 
 import os
+from contextlib import nullcontext
 import numpy as np
 from collections.abc import Iterable
 from time import time
@@ -49,7 +50,8 @@ def process(paralfunc,
             remote_parameters,
             store_results,
             progress_step_time=5,
-            progress_step_percent=1):
+            progress_step_percent=1,
+            on_result=None):
     t0 = time()
     t_print_prev = 0
     selK = [ik for ik, k in enumerate(K_list) if not k.was_evaluated_flag]
@@ -84,6 +86,8 @@ def process(paralfunc,
             res = paralfunc(Kp, **remote_parameters)
             weighted = set_result(Kp, res)
             result_sum = weighted if result_sum is None else result_sum + weighted
+            if on_result is not None:
+                on_result(Kp, result_sum)
             if (count + 1) % nstep_print == 0:
                 t_print_prev = print_progress(count=count + 1,
                                               total=numK,
@@ -118,7 +122,11 @@ def process(paralfunc,
                     weighted = set_result(kp, res)
                     result_sum = weighted if result_sum is None else result_sum + weighted
                     count += 1
+                    if on_result is not None:
+                        on_result(kp, result_sum)
                 del results, res, ref
+            elif on_result is not None:
+                on_result(None, result_sum)
             t_print_prev = print_progress(count=count, total=numK, t0=t0,
                                           tprev=t_print_prev, progress_step_time=progress_step_time)
         print(f"Results: reused={len(K_list) - numK}, computed={count}, "
@@ -156,6 +164,8 @@ def run(
         print_progress_step_percent=1,
         restart_recover=False,
         restart_on_corrupt="error",
+        partial_save_interval=0,
+        partial_output_dir=None,
 ):
     """
     The function to run a calculation. Substitutes the old (obsolete and removed) `integrate()` and `tabulate()`
@@ -197,6 +207,12 @@ def run(
     restart_on_corrupt : {"error", "recompute"}
         Reject corrupt point files, or quarantine and recompute them. Scientific
         configuration mismatches always fail. Missing files are recomputed.
+    partial_save_interval : float
+        Seconds between iteration-0 observation snapshots; 0 disables them.
+        Enabling snapshots also enables per-point checkpoint storage.
+    partial_output_dir : str or None
+        Independent snapshot directory; defaults to fout_name + '.partial'.
+        All generations are retained; tensors keep original integration weights.
     restart : bool
         if `True` : reads restart information from `file_Klist` and starts from there
     Klist_part : int
@@ -223,6 +239,15 @@ def run(
     -----
     Results are also printed to ASCII files
     """
+    if not np.isfinite(partial_save_interval) or partial_save_interval < 0:
+        raise ValueError("partial_save_interval must be finite and nonnegative")
+    if partial_save_interval:
+        if isinstance(grid, Path):
+            raise ValueError("Partial output supports grid iteration 0 only")
+        from .partial import validate_output
+        partial_output_dir = validate_output(partial_output_dir or (str(fout_name)+'.partial'),
+                                             file_Klist_path or '_tmp_wb')
+        allow_restart = True
     if restart_recover and not restart:
         raise ValueError("restart_recover requires restart=True")
     if restart_on_corrupt not in ("error", "recompute"):
@@ -356,15 +381,31 @@ def run(
                     print(f" K-point {i} : {K} ")
         if checkpoint is not None:
             checkpoint.begin(i_iter_global, K_list)
-        count_iter, result_sum_iter = process(
-            paralfunc=paralfunc,
-            K_list=K_list,
-            parallel=parallel,
-            dump_results=dump_results or allow_restart,
-            store_results=allow_restart or adpt_num_iter > 0,
-            progress_step_time=print_progress_step_time,
-            progress_step_percent=print_progress_step_percent,
-            remote_parameters=remote_parameters)
+        if partial_save_interval and i_iter_global == 0:
+            from .partial import PartialWriter
+            manager = PartialWriter(partial_output_dir, checkpoint.fingerprint, K_list,
+                                    partial_save_interval, restart_report if restart else None)
+        else:
+            manager = nullcontext(None)
+        with manager as partial:
+            if partial is not None and restart:
+                partial.publish(result_all, strict=False)
+            count_iter, result_sum_iter = process(
+                paralfunc=paralfunc,
+                K_list=K_list,
+                parallel=parallel,
+                dump_results=dump_results or allow_restart,
+                store_results=allow_restart or adpt_num_iter > 0,
+                progress_step_time=print_progress_step_time,
+                progress_step_percent=print_progress_step_percent,
+                remote_parameters=remote_parameters,
+                on_result=(lambda kp, subtotal: partial.observe(kp, subtotal, result_all))
+                          if partial is not None else None)
+            if partial is not None:
+                total = result_sum_iter if result_all is None else (
+                    result_all if result_sum_iter is None else result_all+result_sum_iter)
+                partial.publish(total, strict=False)
+
         counter += count_iter
 
         nk = len(K_list)

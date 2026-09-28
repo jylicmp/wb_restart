@@ -23,3 +23,23 @@ Real compute-node validation also passed: untouched 1.8 versus new serial
 integration agrees exactly on the small model; real Ray parallel integration
 agrees exactly, and missing-point recovery differs by at most
 4.440892098500626e-16. Main process and workers used the same committed package.
+
+## Iteration 0 focus
+
+After the requested expansion, **21 tests passed in 11.656 s** in the deployed
+cloned environment. Five additional test methods use 84 initial K points and
+exercise these subcases:
+
+- Legacy checkpoints without a K-list, with 0, 1, 42, 57, 83 or all 84 results.
+  Randomized write order and sparse holes are included.
+- Native interruptions after 0, 1, 41 or 83 completed points.
+- Sparse legacy recovery interrupted twice more (after 7 and 11 new results),
+  then completed and continued through two adaptive refinements.
+- Four missing files and three truncated files in the same legacy checkpoint.
+- All first-round results saved, but interruption before the completion marker.
+
+The tests record actual computed coordinates, require every needed point exactly
+once across attempts, and require saved legacy files to remain byte-identical.
+A repeated complete restart performs no computation. Raw and smoothed totals
+agree within rtol=1e-10, atol=1e-12. Final adaptive coordinates and weights agree
+exactly. All fixtures reside in disposable independent directories.

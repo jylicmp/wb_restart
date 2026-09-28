@@ -12,3 +12,4 @@ _tmp_wb/
 *.err
 *.out
 *.tar.gz
+.DS_Store

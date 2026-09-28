@@ -16,12 +16,13 @@ def sha(path):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--environment', type=Path, required=True)
+    p.add_argument('--checkout', type=Path, default=Path(__file__).resolve().parents[1])
     p.add_argument('--allow-dirty', action='store_true', help='Development tests only; recorded in deployment manifest')
     args = p.parse_args()
     env = args.environment.resolve()
     if env.name != 'wberri_v1.8_restart':
         p.error('Deployment is restricted to wberri_v1.8_restart')
-    root = Path(__file__).resolve().parents[1]
+    root = args.checkout.resolve()
     dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root).strip())
     if dirty and not args.allow_dirty:
         p.error('Commit changes first (or explicitly use --allow-dirty for development)')
@@ -29,6 +30,8 @@ def main():
     target = env/'lib/python3.12/site-packages/wannierberri'
     if not target.is_dir() or target.is_symlink():
         p.error('Expected physical WannierBerri package directory is missing')
+    previous = target/'.wb_restart_deployment.json'
+    previous_files = json.loads(previous.read_text())['sha256'] if previous.exists() else {}
     files = {}
     for source in sorted((root/'wannierberri').rglob('*.py')):
         rel = source.relative_to(root/'wannierberri')
@@ -47,6 +50,11 @@ def main():
             if os.path.exists(tmp): os.unlink(tmp)
         files[str(rel)] = sha(dest)
         assert files[str(rel)] == sha(source)
+    # Remove only obsolete files named in our previous deployment record.
+    for name in set(previous_files) - set(files):
+        stale = target/name
+        if stale.parent.resolve().is_relative_to(target) and stale.is_file():
+            stale.unlink()
     # Timestamp/size based .pyc caches from the cloned installation must not win.
     for cache in target.rglob('*.pyc'):
         cache.unlink()

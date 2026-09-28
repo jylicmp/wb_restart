@@ -82,7 +82,8 @@ def process(paralfunc,
     if not parallel:
         for count, Kp in enumerate(dK_list):
             res = paralfunc(Kp, **remote_parameters)
-            result_sum += set_result(Kp, res)
+            weighted = set_result(Kp, res)
+            result_sum = weighted if result_sum is None else result_sum + weighted
             if (count + 1) % nstep_print == 0:
                 t_print_prev = print_progress(count=count + 1,
                                               total=numK,
@@ -91,35 +92,37 @@ def process(paralfunc,
                                               progress_step_time=progress_step_time)
     else:
         import ray
-        remotes = [paralfunc.remote(dK, **remote_parameters) for dK in dK_list]
-        num_remotes = len(remotes)
-        num_remotes_calculated = 0
-        remotes_calculated_old = np.zeros(num_remotes, dtype=bool)
-        while True:
-
-            # the progress will be printed every minute
-            # even, if the required number of remotes had not finished,
-            remotes_calculated, _ = ray.wait(
-                remotes, num_returns=min(num_remotes_calculated + nstep_print, num_remotes),
-                timeout=60)
-
-            num_remotes_calculated = len(remotes_calculated)
-            remotes_calculated_bool = np.array([r in remotes_calculated for r in remotes])
-            remotes_calculated_diff = remotes_calculated_bool & ~remotes_calculated_old
-            for ir in np.where(remotes_calculated_diff)[0]:
-                res = ray.get(remotes[ir])
-                Kp = dK_list[ir]
-                result_sum += set_result(Kp, res)
-            if num_remotes_calculated >= num_remotes:
+        # Bound both pending tasks and deserialized results. Mapping each ref
+        # directly to its K point avoids quadratic membership scans.
+        pending = {}
+        source = iter(dK_list)
+        window = max(1, min(4096, max(256, 2 * nproc_loc)))
+        batch = max(1, min(256, nproc_loc))
+        exhausted = False
+        count = 0
+        while pending or not exhausted:
+            while not exhausted and len(pending) < window:
+                try:
+                    kp = next(source)
+                except StopIteration:
+                    exhausted = True
+                    break
+                pending[paralfunc.remote(kp, **remote_parameters)] = kp
+            if not pending:
                 break
-            remotes_calculated_old = remotes_calculated_bool
-
-            t_print_prev = print_progress(count=num_remotes_calculated,
-                                          total=numK,
-                                          t0=t0,
-                                          tprev=t_print_prev,
-                                          progress_step_time=progress_step_time)
-        ray.get(remotes)
+            ready, _ = ray.wait(list(pending), num_returns=min(batch, len(pending)), timeout=1)
+            if ready:
+                results = ray.get(ready)
+                for ref, res in zip(ready, results):
+                    kp = pending.pop(ref)
+                    weighted = set_result(kp, res)
+                    result_sum = weighted if result_sum is None else result_sum + weighted
+                    count += 1
+                del results, res, ref
+            t_print_prev = print_progress(count=count, total=numK, t0=t0,
+                                          tprev=t_print_prev, progress_step_time=progress_step_time)
+        print(f"Results: reused={len(K_list) - numK}, computed={count}, "
+              f"written={count if dump_results else 0}", flush=True)
 
     t = time() - t0
 

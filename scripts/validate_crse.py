@@ -53,6 +53,7 @@ def main():
     p.add_argument('--original-package',type=Path,required=True)
     p.add_argument('--baseline',type=Path,required=True)
     p.add_argument('--cpus',type=int,default=4)
+    p.add_argument('--indices',help='Optional comma-separated subset for retrying failed samples')
     args=p.parse_args()
     if args.work.resolve()==args.source.resolve() or args.source.resolve() in args.work.resolve().parents:
         p.error('Use a separate validation directory')
@@ -92,6 +93,10 @@ def main():
         target=round((len(points)-1)*frac)
         index=min(available,key=lambda i:abs(i-target))
         if index not in indices:indices.append(index)
+    if args.indices is not None:
+        indices=list(dict.fromkeys(int(i) for i in args.indices.split(',')))
+        if not 1<=len(indices)<=8 or not set(indices)<=available:
+            p.error('Retry indices must identify 1 to 8 available points')
     indices=indices[:8]
     report.update(points=len(points),available_files=len(available),missing_files=len(points)-len(available),
                   weights_equal=True,weight_sum=float(factors.sum()),sample_indices=indices)

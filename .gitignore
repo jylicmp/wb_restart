@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.local/
+_tmp_wb/
+*.pickle
+*.npy
+*.npz
+*.dat
+*.log
+*.err
+*.out
+*.tar.gz

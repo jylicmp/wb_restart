@@ -1,0 +1,505 @@
+from numpy import sqrt as sq
+import numpy as np
+import sympy as sym
+from functools import cached_property, lru_cache
+from scipy.special import spherical_jn
+from scipy.interpolate import CubicSpline
+from scipy.integrate import trapezoid
+from scipy.constants import physical_constants
+
+from .unique_list import UniqueList
+from scipy.linalg import block_diag
+bohr_radius_angstrom = physical_constants["Bohr radius"][0] * 1e10
+
+# Note: in the Dwann it is assumed that all orbitals are REAL, so under TR one does not need to take complex conjugate
+# in future, if complex orbitals are considered, this should be taken care of
+
+
+orbitals_sets_dic = {
+    's': ['s'],
+    'p': ['pz', 'px', 'py'],
+    'd': ['dz2', 'dxz', 'dyz', 'dx2-y2', 'dxy'],
+    'f': ['fz3', 'fxz2', 'fyz2', 'fzx2-zy2', 'fxyz', 'fx3-3xy2', 'f3yx2-y3'],
+    'sp': ['sp-1', 'sp-2'],
+    'p2': ['pz', 'py'],
+    'pxy': ['px', 'py'],
+    'sp2': ['sp2-1', 'sp2-2', 'sp2-3'],
+    'pz': ['pz'],
+    'sp3': ['sp3-1', 'sp3-2', 'sp3-3', 'sp3-4'],
+    'sp3d2': ['sp3d2-1', 'sp3d2-2', 'sp3d2-3', 'sp3d2-4', 'sp3d2-5', 'sp3d2-6'],
+    't2g': ['dxz', 'dyz', 'dxy'],
+    'eg': ['dx2-y2', 'dz2'],
+}
+
+basis_shells_list = ['s', 'p', 'd', 'f']
+hybrid_shells_list = ['sp', 'p2', 'sp2', 'pz', 'sp3', 'sp3d2', 't2g', 'eg', 'pxy']
+
+basis_orbital_list = [k for o in basis_shells_list for k in orbitals_sets_dic[o]]
+
+
+@lru_cache
+def orb_to_shell(orb):
+    for shell, orbs in orbitals_sets_dic.items():
+        if orb in orbs:
+            return shell
+    raise ValueError(f"orbital {orb} is not in the orbitals_sets_dic")
+
+
+@lru_cache
+def num_orbitals(shell_symbol: str):
+    if ";" in shell_symbol:
+        return sum([num_orbitals(s) for s in shell_symbol.split(";")])
+    return len(orbitals_sets_dic[shell_symbol.strip()])
+
+
+hybrids_coef = {
+    'sp-1': {"s": 1 / sq(2), "px": 1 / sq(2)},
+    'sp-2': {"s": 1 / sq(2), "px": -1 / sq(2)},
+    'sp2-1': {"s": 1 / sq(3), "px": -1 / sq(6), "py": 1 / sq(2)},
+    'sp2-2': {"s": 1 / sq(3), "px": -1 / sq(6), "py": -1 / sq(2)},
+    'sp2-3': {"s": 1 / sq(3), "px": 2 / sq(6)},
+    'sp3-1': {"s": 1 / 2, "px": 1 / 2, "py": 1 / 2, "pz": 1 / 2},
+    'sp3-2': {"s": 1 / 2, "px": 1 / 2, "py": -1 / 2, "pz": -1 / 2},
+    'sp3-3': {"s": 1 / 2, "px": -1 / 2, "py": 1 / 2, "pz": -1 / 2},
+    'sp3-4': {"s": 1 / 2, "px": -1 / 2, "py": -1 / 2, "pz": 1 / 2},
+    'sp3d2-1': {"s": 1 / sq(6), "px": -1 / sq(2), "dz2": -1 / sq(12), "dx2-y2": 1 / 2},
+    'sp3d2-2': {"s": 1 / sq(6), "px": 1 / sq(2), "dz2": -1 / sq(12), "dx2-y2": 1 / 2},
+    'sp3d2-3': {"s": 1 / sq(6), "py": -1 / sq(2), "dz2": -1 / sq(12), "dx2-y2": -1 / 2},
+    'sp3d2-4': {"s": 1 / sq(6), "py": 1 / sq(2), "dz2": -1 / sq(12), "dx2-y2": -1 / 2},
+    'sp3d2-5': {"s": 1 / sq(6), "pz": -1 / sq(2), "dz2": 1 / sq(3)},
+    'sp3d2-6': {"s": 1 / sq(6), "pz": 1 / sq(2), "dz2": 1 / sq(3)},
+}
+for k in basis_orbital_list:
+    hybrids_coef[k] = {k: 1}
+
+
+
+
+
+class Orbitals:
+
+    def __init__(self):
+        x = sym.Symbol('x')
+        y = sym.Symbol('y')
+        z = sym.Symbol('z')
+        self.xyz = np.transpose([x, y, z])
+        orbitals = {}
+        orbitals['s'] = lambda x, y, z: 1 + 0 * x
+
+        orbitals['px'] = lambda x, y, z: x
+        orbitals['py'] = lambda x, y, z: y
+        orbitals['pz'] = lambda x, y, z: z
+
+        orbitals['dz2'] = lambda x, y, z: (2 * z * z - x * x - y * y) / (2 * sym.sqrt(3.0))
+        orbitals['dxz'] = lambda x, y, z: x * z
+        orbitals['dyz'] = lambda x, y, z: y * z
+        orbitals['dx2-y2'] = lambda x, y, z: (x * x - y * y) / 2
+        orbitals['dxy'] = lambda x, y, z: x * y
+
+        orbitals['fz3'] = lambda x, y, z: z * (2 * z * z - 3 * x * x - 3 * y * y) / (2 * sym.sqrt(15.0))
+        orbitals['fxz2'] = lambda x, y, z: x * (4 * z * z - x * x - y * y) / (2 * sym.sqrt(10.0))
+        orbitals['fyz2'] = lambda x, y, z: y * (4 * z * z - x * x - y * y) / (2 * sym.sqrt(10.0))
+        orbitals['fzx2-zy2'] = lambda x, y, z: z * (x * x - y * y) / 2
+        orbitals['fxyz'] = lambda x, y, z: x * y * z
+        orbitals['fx3-3xy2'] = lambda x, y, z: x * (x * x - 3 * y * y) / (2 * sym.sqrt(6.0))
+        orbitals['f3yx2-y3'] = lambda x, y, z: y * (3 * x * x - y * y) / (2 * sym.sqrt(6.0))
+
+        self.orb_function_dic = {key: [orbitals[k] for k in val] for key, val in orbitals_sets_dic.items() if key in basis_shells_list}
+        self.orb_chara_dic = {
+            's': [x],
+            'p': [z, x, y],
+            'd': [z * z, x * z, y * z, x * x, x * y, y * y],
+            'f': [
+                z * z * z, x * z * z, y * z * z, z * x * x, x * y * z, x * x * x, y * y * y, z * y * y, x * y * y,
+                y * x * x
+            ],
+        }
+
+        self.hybrid_matrix_dic = {}
+        self.hybrid_matrix_shells_dic = {}
+        self.hybrid_matrix_shells_start = {}
+
+        for hshell in hybrid_shells_list:
+            basis_shells_used = set()
+            for orb in orbitals_sets_dic[hshell]:
+                if orb in basis_orbital_list:
+                    basis_shells_used.add(orb_to_shell(orb))
+                elif orb in hybrids_coef:
+                    for orb2 in hybrids_coef[orb]:
+                        basis_shells_used.add(orb_to_shell(orb2))
+                else:
+                    raise ValueError(f"orbital {orb} is not in the basis_orbital_list or hybrids_coef")
+            basis_shells_used = list(basis_shells_used)
+            self.hybrid_matrix_shells_dic[hshell] = basis_shells_used
+            basis_shells_start = [0]
+            for shell in basis_shells_used:
+                basis_shells_start.append(basis_shells_start[-1] + len(orbitals_sets_dic[shell]))
+            # print (f"hybrid shell {hshell}, basis_shells = {basis_shells_used}, basis_shells_start = {basis_shells_start}")
+            num_orb = len(orbitals_sets_dic[hshell])
+            self.hybrid_matrix_shells_start[hshell] = basis_shells_start
+            matrix = np.zeros((len(orbitals_sets_dic[hshell]), basis_shells_start[-1]))
+            for i, horb in enumerate(orbitals_sets_dic[hshell]):
+                for j, borb in enumerate(hybrids_coef[horb]):
+                    bshell = orb_to_shell(borb)
+                    shell_stat = basis_shells_start[basis_shells_used.index(bshell)]
+                    k = shell_stat + orbitals_sets_dic[bshell].index(borb)
+                    matrix[i, k] = hybrids_coef[horb][borb]
+            self.hybrid_matrix_dic[hshell] = matrix
+            # print (f"matrix = \n{matrix}")
+            check = np.zeros((num_orb, num_orb))
+            for s, e in zip(basis_shells_start[:-1], basis_shells_start[1:]):
+                mat_shell = matrix[:, s:e]
+                # print (f"check.shape = {check.shape}, mat_shell.shape = {mat_shell.shape}")
+                check += mat_shell @ mat_shell.T
+            assert np.allclose(check, np.eye(num_orb)), f"check failed for {hshell} : {check}"
+
+
+
+
+
+    def rot_orb_basis(self, orb_symbol, rot_glb):
+        """Get rotation matrix of orbitals in each orbital quantum number
+        orb_symbol : str
+            one of 's', 'p', 'd', 'f'
+        rot_glb : 3x3 array
+            rotation matrix in cartesian coordinates
+        Returns
+        -------
+        orb_rot_mat : array
+            rotation matrix of shape (num_orbitals, num_orbitals)
+            where num_orbitals = 1, 3, 5, 7 for 's', 'p', 'd', 'f' respectively
+        Notes
+        -----
+        The rotation matrix A is defined as
+        phi_j(R^-1 r) = phi_i(r) A_ij where phi_i is the original orbital, phi'_i is the rotated orbital
+        """
+        orb_dim = num_orbitals(orb_symbol)
+        orb_rot_mat = np.zeros((orb_dim, orb_dim), dtype=float)
+        xp, yp, zp = np.dot(np.linalg.inv(rot_glb), self.xyz)
+        OC = self.orb_chara_dic[orb_symbol]
+        OC_len = len(OC)
+        for i in range(orb_dim):
+            subs = []
+            equation = (self.orb_function_dic[orb_symbol][i](xp, yp, zp)).expand()
+            for j in range(OC_len):
+                eq_tmp = equation.subs(OC[j], 1)
+                for j_add in range(1, OC_len):
+                    eq_tmp = eq_tmp.subs(OC[(j + j_add) % OC_len], 0)
+                subs.append(eq_tmp)
+            if orb_symbol in ['s', 'pz']:
+                orb_rot_mat[0, 0] = subs[0].evalf()
+            elif orb_symbol == 'p':
+                orb_rot_mat[0, i] = subs[0].evalf()
+                orb_rot_mat[1, i] = subs[1].evalf()
+                orb_rot_mat[2, i] = subs[2].evalf()
+            elif orb_symbol == 'd':
+                orb_rot_mat[0, i] = (2 * subs[0] - subs[3] - subs[5]) / sym.sqrt(3.0)
+                orb_rot_mat[1, i] = subs[1].evalf()
+                orb_rot_mat[2, i] = subs[2].evalf()
+                orb_rot_mat[3, i] = (subs[3] - subs[5]).evalf()
+                orb_rot_mat[4, i] = subs[4].evalf()
+            elif orb_symbol == 'f':
+                orb_rot_mat[0, i] = (subs[0] * sym.sqrt(15.0)).evalf()
+                orb_rot_mat[1, i] = (subs[1] * sym.sqrt(10.0) / 2).evalf()
+                orb_rot_mat[2, i] = (subs[2] * sym.sqrt(10.0) / 2).evalf()
+                orb_rot_mat[3, i] = (2 * subs[3] + 3 * subs[0]).evalf()
+                orb_rot_mat[4, i] = subs[4].evalf()
+                orb_rot_mat[5, i] = ((2 * subs[5] + subs[1] / 2) * sym.sqrt(6.0)).evalf()
+                orb_rot_mat[6, i] = ((-2 * subs[6] - subs[2] / 2) * sym.sqrt(6.0)).evalf()
+
+        return orb_rot_mat
+
+
+    def rot_orb(self, orb_symbol, rot_glb):
+        if orb_symbol in ["s", "p", "d", "f"]:
+            return self.rot_orb_basis(orb_symbol, rot_glb)
+        elif orb_symbol in hybrid_shells_list:
+            nbasis = self.hybrid_matrix_dic[orb_symbol].shape[1]
+            rot_orb_loc = np.zeros((nbasis, nbasis))
+            matrix_hybrid = self.hybrid_matrix_dic[orb_symbol]
+            for s, e, shell  in zip(self.hybrid_matrix_shells_start[orb_symbol], self.hybrid_matrix_shells_start[orb_symbol][1:], self.hybrid_matrix_shells_dic[orb_symbol]):
+                rot_orb_loc[s:e, s:e] = self.rot_orb_basis(shell, rot_glb)
+            return matrix_hybrid @ rot_orb_loc @ matrix_hybrid.T
+
+
+@lru_cache
+def get_orbitals():
+    return Orbitals()
+
+
+class OrbitalRotator:
+    """
+    a class to get the rotation matrix of orbitals under a given rotation
+
+
+    returns matrix Rij, where i is the index of the original orbital , and j is the index of the rotated orbital
+
+    phi'_j = phi_i R_ij
+    """
+
+    def __init__(self):
+        self.calcualted_matrices = UniqueList(tolerance=1e-4)
+        self.orbitals = get_orbitals()
+        self.results_dict = {}
+
+    def __call__(self, orb_symbol, rot_cart=None, irot=None, basis1=None, basis2=None):
+        # return self.orbitals.rot_orb(orb_symbol=orb_symbol, rot_glb=basis1.T @ rot_cart @ basis2)
+
+        assert (basis1 is None) == (basis2 is None), "basis1 and basis2 should be both provided or both None"
+        assert (irot is None) != (rot_cart is None), f"either irot or rot_cart should be provided, not both, got irot={irot}, rot_cart={rot_cart}"
+        if irot is None:
+            if basis1 is not None:
+                # rot_cart = basis2.T @ rot_cart @ basis1
+                rot_cart = basis2 @ rot_cart @ basis1.T
+            irot = self.calcualted_matrices.index_or_None(rot_cart)
+            if irot is None:
+                irot = len(self.calcualted_matrices)
+                self.calcualted_matrices.append(rot_cart)
+        elif rot_cart is None:
+            rot_cart = self.calcualted_matrices[irot]
+        if (irot, orb_symbol) not in self.results_dict:
+            orb_symbol = orb_symbol.strip()
+            if ";" in orb_symbol:
+                mat_list = [self(orb, irot=irot) for orb in orb_symbol.split(";")]
+            else:
+                mat_list = [self.orbitals.rot_orb(orb_symbol=orb_symbol, rot_glb=rot_cart)]
+            self.results_dict[(irot, orb_symbol)] = block_diag(*mat_list)
+        return self.results_dict[(irot, orb_symbol)]
+
+
+class Projector:
+    """
+    a class to calculate the projection of the wavefunctions on the plane vectors
+    """
+
+    def __init__(self, gk, bessel, spread_factor=1, unit=bohr_radius_angstrom):
+        a0 = unit * spread_factor
+        self.gk = gk
+        self.projectors = {}
+        gk_abs = np.linalg.norm(gk, axis=1)
+        select = gk_abs < 1e-8
+        gk_abs[select] = 1e-8  # to avoid division by zero
+        self.gka_abs = gk_abs * a0
+        g_costheta = gk[:, 2] / gk_abs
+        g_costheta[select] = 0
+        g_phi = np.arctan2(gk[:, 1], gk[:, 0])
+        # print("phi", g_phi)
+        # print("costheta", g_costheta)
+        self.sph = SphericalHarmonics(costheta=g_costheta, phi=g_phi)
+        self.bessel = bessel
+        self.bessel_l = {}
+        self.coef = 4 * np.pi * a0**(3 / 2)
+
+    @lru_cache
+    def get_bessel_l(self, l, radial_nodes=0):
+        return self.bessel(l=l, k=self.gka_abs, n=radial_nodes + 1) * (-1j)**l
+
+    def __call__(self, orbital, basis=None, radial_nodes=0):
+        if orbital in hybrids_coef and orbital not in basis_orbital_list:
+            return sum(self(orb, basis, radial_nodes) * coef for orb, coef in hybrids_coef[orbital].items())
+        else:
+            l = {'s': 0, 'p': 1, 'd': 2, 'f': 3}[orbital[0]]
+            bessel_j_radial_int = self.get_bessel_l(l, radial_nodes)
+            spherical = self.sph(orbital, basis)
+            return bessel_j_radial_int * spherical * self.coef
+
+
+
+def radial_function_tilde(n, r):
+    """
+    The radial function is 
+    Rn = (a0)^{-3/2} * Rtilde_n (r/(n*a0)) 
+     where  
+     R_tilde_1 (x) = exp(-x) * 2
+     R_tilde_2 (x) = exp(-x) * (1 - x) * 2**(3/2)
+     R_tilde_3 (x) = exp(-x) * (1 - 2*x + 2*x^2/3) * 2 * 3^{-1/2}
+
+    normalized such that
+     int_0^/infty R_tilde_m(r) * R_tilde_n (r) * r^2 dr = delta_mn
+
+     the function returns R_tilde_n (r)
+
+    :param n: int
+        number of nodes + 1
+    :param r: Description
+        radial distance in units of n*a0
+    """
+    if n == 1:
+        return 2 * np.exp(-r)
+    elif n == 2:
+        return np.exp(-r) * (1 - r) / np.sqrt(2)
+    elif n == 3:
+        return np.exp(-r) * (1 - 2 * r + (2 / 3) * r**2) * 2 / np.sqrt(27)
+    else:
+        raise ValueError(f"radial function for n={n} nodes is not defined")
+
+
+class Bessel_j_radial_int:
+    r"""
+    a class to evaluate the integral
+
+    :math:`n^3 \int_0^{\infty} j_l(n*k*x) R_tilde_n(n, x) x**2  dx`
+    """
+
+    def __init__(self,
+                k0=5, kmax=100, dk=0.01, dtk=0.2, kmin=1e-3,
+                 x0=20, xmax=200, dx=0.01, dtx=0.1,
+                 ):
+        self.splines = {}
+        self.kmax = kmax
+        self.kgrid = self._get_grid(k0, kmax, dk, dtk)
+        self.xgrid = self._get_grid(x0, xmax, dx, dtx)
+        # print(f"the xgrid has {len(self.xgrid)} points")
+        # print(f"the kgrid has {len(self.kgrid)} points")
+        self.kmin = kmin
+
+    @classmethod
+    def _get_grid(cls, x0, xmax, dx, dt):
+        xgrid = list(np.arange(0, x0, dx))
+        t = dt
+        x0 = xgrid[-1]
+        while xgrid[-1] < xmax:
+            xgrid.append(x0 * np.exp(t))
+            t += dt
+        return np.array(xgrid)
+
+    # @classmethod
+    # def _get_grid_wannier90(cls, x0, xmax, dx, dtx):
+    #     xmin=-6
+    #     dx=0.025
+    #     rmax = 10
+    #     mesh_r = int((np.log(rmax)-xmin)/dx) +1
+    #     r = np.zeros(mesh_r)
+    #     rij = np.zeros(mesh_r)
+    #     for ir in range(mesh_r):
+    #         x = xmin + ir*dx
+    #         r[ir] = np.exp(x)
+
+
+
+        # def set_spline(self, l, n=1):
+        #     if (l, n) not in self.splines:
+        #         self.splines[(l, n)] = self.get_spline(l, n)
+        #     return self.splines[(l, n)]
+
+
+    @lru_cache
+    def get_spline(self, l, n=1):
+        fourier = []
+        radial = radial_function_tilde(n, self.xgrid) * self.xgrid**2
+        for k in self.kgrid:
+            if k < self.kmin and l > 0:
+                fourier.append(0)
+            else:
+                j = spherical_jn(l, k * self.xgrid * n)
+                fourier.append(trapezoid(y=j * radial, x=self.xgrid))
+        fourier = np.array(fourier) * n**3
+        return CubicSpline(self.kgrid, fourier)
+
+    def __call__(self, l, k, n=1):
+        spline = self.get_spline(l, n)
+        res = np.zeros(len(k))
+        select = (k <= self.kmax)
+        res[select] = spline(k[select])
+        return res
+
+
+class SphericalHarmonics:
+
+    def __init__(self, costheta, phi):
+        self.costheta = costheta
+        self.phi = phi
+        self.harmonics = {}
+        self.sqpi = 1 / np.sqrt(np.pi)
+        self.calcualted_basices = UniqueList(tolerance=1e-4)
+
+    @cached_property
+    def sintheta(self):
+        return np.sqrt(1 - self.costheta**2)
+
+    @cached_property
+    def cosphi(self):
+        return np.cos(self.phi)
+
+    @cached_property
+    def sinphi(self):
+        return np.sin(self.phi)
+
+    @cached_property
+    def sin2phi(self):
+        return 2 * self.sinphi * self.cosphi
+
+    @cached_property
+    def cos2phi(self):
+        return 2 * self.cosphi**2 - 1
+
+    @cached_property
+    def cos2theta(self):
+        return 2 * self.costheta**2 - 1
+
+    @cached_property
+    def sin2theta(self):
+        return 2 * self.costheta * self.sintheta
+
+    @cached_property
+    def orbitalrotator(self):
+        return OrbitalRotator()
+
+    def __call__(self, orbital, basis=None):
+        if basis is None:
+            basis = np.eye(3)
+        if basis in self.calcualted_basices:
+            ibasis = self.calcualted_basices.index(basis)
+        else:
+            ibasis = len(self.calcualted_basices)
+            self.calcualted_basices.append(basis)
+            # print(f"new basis for spherical harmonics, \n {basis}\n total {len(self.calcualted_basices)} bases")
+        if (orbital, ibasis) not in self.harmonics:
+            self.harmonics[(orbital, ibasis)] = self._harmonics(orbital, basis)
+        return self.harmonics[(orbital, ibasis)]
+
+    def _harmonics(self, orbital, basis):
+        """from here https://en.wikipedia.org/wiki/Table_of_spherical_harmonics#Real_spherical_harmonics
+
+        hybrids - according to Wannier90 manual"""
+        from numpy import sqrt as sq
+        from numpy import pi
+        if orbital not in basis_orbital_list:
+            assert orbital in hybrids_coef, f"orbital {orbital} not in basis_orbital_list or hybrids_coef"
+            return sum(self(orb, basis) * coef for orb, coef in hybrids_coef[orbital].items())
+        else:
+            if not np.allclose(basis, np.eye(3), atol=1e-4):
+                # print(f"evaluating orbital {orbital} in basis \n{basis}")
+                shell = orbital[0]
+                assert shell in basis_shells_list, f"shell {shell} not in basis_shells_list"
+                shell_list = orbitals_sets_dic[shell]
+                assert orbital in shell_list, f"orbital {orbital} not in shell {shell}"
+                shell_pos = shell_list.index(orbital)
+                # print(f"basis = \n{basis}")
+                matrix = self.orbitalrotator(shell, rot_cart=basis)
+                # print(f"matrix = \n{matrix}")
+                vector = matrix[shell_pos, :]
+                # print(f" orbital {orbital} basis = \n{basis}\n,   vector = {vector}, shell_list = {shell_list}")
+                return sum(self(o, basis=None) * k for k, o in zip(vector, shell_list))
+            else:
+                match orbital:
+                    case 's':
+                        return 1 / (2 * sq(pi)) * np.ones_like(self.costheta)
+                    case 'pz':
+                        return sq(3 / (4 * pi)) * self.costheta
+                    case 'px':
+                        return sq(3 / (4 * pi)) * self.sintheta * self.cosphi
+                    case 'py':
+                        return sq(3 / (4 * pi)) * self.sintheta * self.sinphi
+                    case 'dz2':
+                        return sq(5 / (16 * pi)) * (3 * self.costheta**2 - 1)
+                    case 'dx2-y2':
+                        return sq(15 / (16 * pi)) * self.sintheta**2 * self.cos2phi
+                    case 'dxy':
+                        return sq(15 / (16 * pi)) * self.sintheta**2 * self.sin2phi
+                    case 'dxz':
+                        return sq(15 / (16 * pi)) * self.sin2theta * self.cosphi
+                    case 'dyz':
+                        return sq(15 / (16 * pi)) * self.sin2theta * self.sinphi
+                    case _:
+                        raise ValueError(f"orbital {orbital} not implemented")

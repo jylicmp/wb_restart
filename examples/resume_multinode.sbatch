@@ -12,7 +12,9 @@ mkdir -p "$WB_TEST_ROOT/restart-results"
 mapfile -t nodes < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 [[ ${#nodes[@]} -eq 4 ]]
 head_ip=$(srun --overlap --nodes=1 --ntasks=1 --cpus-per-task=1 -w "${nodes[0]}" hostname -I | awk '{print $1}')
-port=$((15000 + SLURM_JOB_ID % 10000))
+# Ray reserves 10002-19999 for worker processes by default. Keep the GCS port
+# outside that range while deriving a stable, job-specific value.
+port=$((20000 + SLURM_JOB_ID % 10000))
 address="$head_ip:$port"
 ray_tmp="/tmp/wbi-$SLURM_JOB_ID"
 steps=()

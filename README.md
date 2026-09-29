@@ -1,32 +1,40 @@
-# WannierBerri 1.8 restart
+# WannierBerri 1.8 Restart
 
-在现有 WannierBerri **1.8.0 定制版本**上增加中断续算和有界 Ray 结果收集。
-原有 MQM 计算器、公式及矩阵配置保持不变；完整基线见 `baseline-v1.8-mqm`。
-上游代码按 [GPL](LICENSE) 分发。
+**English** | [简体中文](README.zh-CN.md)
 
-## 功能
+This project adds interruption-safe restart, partial result export, and bounded Ray result collection to a customized WannierBerri **1.8.0** codebase. The existing MQM calculators, formulas, and matrix requirements are preserved. The complete source baseline is tagged `baseline-v1.8-mqm`.
 
-- 每轮分发计算前提交 K 点清单和权重；支持首轮及自适应迭代中断续算。
-- 结果原子落盘、身份和配置校验、损坏文件隔离、目录迁移及单写入者锁。
-- 显式恢复缺少 `K_list.pickle` 的旧版第 0 轮，复用有效结果，只补算缺失点。
-- Ray 用引用到 K 点的映射收集结果，待处理任务和反序列化批次均有上限。
+The upstream code is distributed under the [GPL](LICENSE).
 
-## Python 接口
+## Features
+
+- Commits the complete K-point list and weights before dispatching each iteration.
+- Resumes interrupted iteration 0 calculations and later adaptive refinement iterations.
+- Writes per-point results atomically and validates their index, configuration, shape, and checksum.
+- Quarantines corrupt files for recomputation, supports checkpoint relocation, and enforces a single writer.
+- Explicitly reconstructs a missing legacy iteration 0 K-point list, reuses valid results, and computes only missing points.
+- Publishes integrity-checked partial snapshots while iteration 0 is still running.
+- Collects Ray results through an `ObjectRef -> K-point` mapping with bounded pending and deserialization batches.
+- Restricts incremental symmetry deduplication to newly added K points, avoiding quadratic scans over large existing grids.
+
+## Python API
 
 ```python
 result = wb.run(
     system, grid, calculators,
     restart=True,
-    restart_recover=True,       # 仅缺少清单的旧版第 0 轮需要
-    restart_on_corrupt="error", # 或 "recompute"：隔离损坏文件后补算
+    restart_recover=True,        # Required only for legacy iteration 0 without a K-point list
+    restart_on_corrupt="error",  # Or "recompute" to quarantine and recompute corrupt files
     file_Klist_path="/path/to/independent/checkpoint",
-    allow_restart=True, dump_results=True,
+    allow_restart=True,
+    dump_results=True,
+    partial_save_interval=900,
+    partial_output_dir="/path/to/partial-results",
     adpt_num_iter=20,
 )
 ```
 
-`adpt_num_iter` 保留原语义：从选中的全局迭代起，额外执行这么多次细化。
-例如从迭代 5 接续至迭代 20，应设置 15。命令行入口自动换算：
+`adpt_num_iter` keeps its original meaning: it is the number of additional refinement iterations after the selected global iteration. For example, continuing from iteration 5 through iteration 20 requires 15 additional iterations. The command-line entry point performs this conversion automatically:
 
 ```bash
 export WB_TB_FILE=/path/to/CrSe_SOC_tb.dat
@@ -37,31 +45,30 @@ python /path/to/repo/scripts/restart_run.py \
 python /path/to/repo/scripts/restart_run.py \
   --config /path/to/repo/examples/crse_config.py \
   --checkpoint /path/to/independent/checkpoint --recover \
-  --on-corrupt recompute --until-iteration 20 --output /path/to/results/CrSe
+  --on-corrupt recompute --until-iteration 20 --output /path/to/results/CrSe \
+  --partial-interval 900 --partial-output /path/to/partial-results
 ```
 
-检查命令只读，但完整模型加载和网格重建仍需通过计算作业执行。`--inspect`
-报告有效、缺失和损坏编号；配置或结果结构不一致会报错，不会当作损坏而补算。
+Inspection is read-only, but it still loads the full model and reconstructs the grid, so run it through an appropriate compute job. `--inspect` reports valid, missing, and corrupt indices. Configuration or result-schema mismatches fail immediately and are never treated as files that may be recomputed.
 
-## 安装、测试与切换
+## Deployment, validation, and operations
 
-先克隆原环境为 `wberri_v1.8_restart`，校验源码一致及文件独立，再从干净 Git 提交部署：
+Clone the original environment as `wberri_v1.8_restart`, verify that its source files are independent from the original environment, and deploy from a clean Git commit:
 
 ```bash
 python scripts/deploy.py --environment /path/to/wberri_v1.8_restart
 ```
 
-部署会核对文件内容并记录 Git 提交，不使用 editable install。脚本拒绝部署到其他名称的环境。
-运行时应离开仓库根目录，避免当前目录中的源码遮蔽环境安装。
+The deployment script copies and verifies the package files and records the deployed Git commit. It does not use an editable installation and refuses to deploy into an environment with any other name. Run production calculations outside the repository root so the checkout cannot shadow the installed package.
 
-- [第 0 轮部分输出与只读导出](docs/partial-output.md)
-- [验收报告：首轮专项、真实 CrSe 与 Ray](docs/validation.md)
-- [检查点格式与兼容边界](docs/checkpoint-format.md)
-- [生产切换、测试和回滚](docs/operations.md)
-- 小模型测试：`python -m unittest discover -v -s /path/to/repo/tests`
-- 原版/新版/真实 Ray 验收模板：`examples/validate_small.sbatch`
-- 真实网格和抽样重算模板：`examples/validate_crse.sbatch`
+- [Iteration 0 partial output and read-only export](docs/partial-output.md)
+- [Validation report: iteration 0, real CrSe, and Ray](docs/validation.md)
+- [Checkpoint format and compatibility boundaries](docs/checkpoint-format.md)
+- [Production cutover, testing, and rollback](docs/operations.md)
+- Small-model tests: `python -m unittest discover -v -s /path/to/repo/tests`
+- Original/new implementation and real-Ray validation template: `examples/validate_small.sbatch`
+- Real-grid and sampled recomputation template: `examples/validate_crse.sbatch`
 
-持久续算当前支持 `System_R`（包括 `System_tb`）；无检查点的计算保持原有系统类型支持。
-旧 pickle 不包含坐标和完整配置指纹，重建权重一致仍不足以独立证明其来源。
-恢复前需要核对原始参数，并重算少量点验证；只加载可信的 pickle。
+Persistent checkpoints currently support `System_R`, including `System_tb`. Calculations without checkpoints retain the original system-type support.
+
+Legacy pickle files do not contain coordinates or a complete input fingerprint. Matching reconstructed weights alone does not independently prove their provenance. Verify the original inputs and recompute a small sample before recovery. Load pickle files only from trusted calculations.

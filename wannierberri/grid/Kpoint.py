@@ -213,24 +213,28 @@ def exclude_equiv_points(K_list, new_points=None):
     wall = [0] + list(np.where(K_list_length[1:] - K_list_length[:-1] > 1e-4)[0] + 1) + [len(K_list)]
 
     exclude = []
+    exclude_set = set()
+    first_new = n - new_points
 
     for start, end in zip(wall[:-1], wall[1:]):
-        for l in range(start, end):
-            i = K_list_sort[l]
-            if i not in exclude:
-                for m in range(start, end):
-                    j = K_list_sort[m]
-                    if i >= j:
-                        continue
-                    # There are two cases:
-                    # (i) if i < n - new_points <= j; or
-                    # (ii) if n - new_points <= i < j
-                    # In both cases, j is excluded
-                    if i < n - new_points and j < n - new_points:
-                        continue
-                    if j not in exclude:
-                        if K_list[i].equiv(K_list[j]):
-                            exclude.append(j)
-                            K_list[i].absorb(K_list[j])
+        group = K_list_sort[start:end]
+        # Old/old comparisons were skipped below in the original loop, but the
+        # loop still visited every old pair.  On a large regular grid a radial
+        # shell can contain many points, turning refinement into an hours-long
+        # quadratic scan.  Every removable point is newly appended, so only
+        # those points can be the right-hand side of a useful comparison.
+        new_group = [j for j in group if j >= first_new]
+        if not new_group:
+            continue
+        for i in group:
+            if i in exclude_set:
+                continue
+            for j in new_group:
+                if i >= j or j in exclude_set:
+                    continue
+                if K_list[i].equiv(K_list[j]):
+                    exclude.append(j)
+                    exclude_set.add(j)
+                    K_list[i].absorb(K_list[j])
     for i in sorted(exclude)[-1::-1]:
         del K_list[i]

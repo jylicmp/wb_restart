@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "iteration_0_points": 620775,
+  "original_iteration_1_points": 620791,
+  "restart_iteration_1_points": 620791,
+  "original_new_points": 16,
+  "restart_new_points": 16,
+  "selected_parent_indices": [331399, 350911],
+  "new_point_coordinates_match": true,
+  "iteration_1_factors_match": true,
+  "rtol": 1e-10,
+  "atol": 1e-12,
+  "max_absolute_errors": {
+    "Qorb_IMD.data": 0.0,
+    "Qorb_IMD.dataSmooth_reconstructed": 0.0,
+    "Qorb_QMD.data": 4.440892098500626e-16,
+    "Qorb_QMD.dataSmooth_reconstructed": 4.440892098500626e-16
+  },
+  "text_output_sha256_matches": {
+    "Qorb_IMD": true,
+    "Qorb_QMD": true
+  },
+  "original_source_matches_recorded_baseline": true,
+  "note": "The original v1.8 scientific calculation used a semantically identical incremental equivalence loop that skips old/old pairs already ignored by the original condition."
+}

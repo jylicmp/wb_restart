@@ -33,6 +33,8 @@ def main():
     modes.add_argument('--inspect',action='store_true',help='Read only; no checkpoint or output writes')
     modes.add_argument('--export-partial',action='store_true',help='Export existing iteration-0 contributions without computing')
     p.add_argument('--partial-interval',type=float,default=900,help='Iteration-0 snapshot interval in seconds; 0 disables')
+    p.add_argument('--progress-interval',type=float,default=300,
+                   help='Minimum progress-log interval in seconds; default: 300')
     p.add_argument('--partial-output',type=Path,help='Independent snapshot directory; required for --export-partial')
     p.add_argument('--recover',action='store_true',help='Allow reconstruction of legacy iteration 0')
     p.add_argument('--on-corrupt',choices=['error','recompute'],default='error')
@@ -46,6 +48,8 @@ def main():
     args=p.parse_args()
     if not np.isfinite(args.partial_interval) or args.partial_interval<0:
         p.error('Partial interval must be finite and nonnegative')
+    if not np.isfinite(args.progress_interval) or args.progress_interval<0:
+        p.error('Progress interval must be finite and nonnegative')
     if args.export_partial and args.partial_output is None:
         p.error('--export-partial requires --partial-output')
     if args.partial_output is not None or (not args.inspect and args.partial_interval):
@@ -96,6 +100,7 @@ def main():
                restart_iteration=args.iteration,adpt_num_iter=args.until_iteration-start,
                allow_restart=True,dump_results=True,file_Klist_path=str(args.checkpoint),
                fout_name=args.output,parallel=not args.serial,
+               print_progress_step_time=args.progress_interval,
                partial_save_interval=args.partial_interval,partial_output_dir=args.partial_output)
     finally:
         if not args.serial: wb.ray_shutdown()

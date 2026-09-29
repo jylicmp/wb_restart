@@ -49,7 +49,7 @@ def process(paralfunc,
             dump_results,
             remote_parameters,
             store_results,
-            progress_step_time=5,
+            progress_step_time=300,
             progress_step_percent=1,
             on_result=None):
     t0 = time()
@@ -160,7 +160,7 @@ def run(
         print_Kpoints=False,
         adpt_mesh=2,
         adpt_fac=1,
-        print_progress_step_time=5,
+        print_progress_step_time=300,
         print_progress_step_percent=1,
         restart_recover=False,
         restart_on_corrupt="error",

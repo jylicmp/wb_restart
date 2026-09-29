@@ -46,10 +46,13 @@ python /path/to/repo/scripts/restart_run.py \
   --config /path/to/repo/examples/crse_config.py \
   --checkpoint /path/to/independent/checkpoint --recover \
   --on-corrupt recompute --until-iteration 20 --output /path/to/results/CrSe \
+  --progress-interval 300 \
   --partial-interval 900 --partial-output /path/to/partial-results
 ```
 
 Inspection is read-only, but it still loads the full model and reconstructs the grid, so run it through an appropriate compute job. `--inspect` reports valid, missing, and corrupt indices. Configuration or result-schema mismatches fail immediately and are never treated as files that may be recomputed.
+
+Progress lines are emitted at most once every 300 seconds by default. Later adaptive rounds normally add only a few K points, so `examples/resume.sbatch` requires a single-node allocation. Use the multi-node harness only for an initial recovery with enough missing points to occupy multiple nodes.
 
 ## Deployment, validation, and operations
 

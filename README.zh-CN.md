@@ -45,11 +45,15 @@ python /path/to/repo/scripts/restart_run.py \
   --config /path/to/repo/examples/crse_config.py \
   --checkpoint /path/to/independent/checkpoint --recover \
   --on-corrupt recompute --until-iteration 20 --output /path/to/results/CrSe \
+  --progress-interval 300 \
   --partial-interval 900 --partial-output /path/to/partial-results
 ```
 
 检查命令只读，但完整模型加载和网格重建仍需通过计算作业执行。`--inspect`
 报告有效、缺失和损坏编号；配置或结果结构不一致会报错，不会当作损坏而补算。
+
+进度日志默认最多每 300 秒输出一次。后续自适应轮次通常只增加少量 K 点，
+因此 `examples/resume.sbatch` 要求使用单节点。多节点模板仅用于缺失点足以占满多个节点的首轮恢复验收。
 
 ## 安装、测试与切换
 

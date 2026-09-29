@@ -50,6 +50,7 @@ done
   --config "$WB_REPO/examples/crse_config.py" --checkpoint "$WB_TEST_ROOT/_tmp_wb" \
   --recover --on-corrupt recompute --until-iteration 1 --ray-address "$address" \
   --output "$WB_TEST_ROOT/restart-results/CrSe_Qorb_GaoXiao" \
+  --progress-interval 300 \
   --partial-interval 900 --partial-output "$WB_TEST_ROOT/partial" \
   2>&1 | tee "$control/restart-$SLURM_JOB_ID.log"
 "$WB_ENV/bin/python" -u -B "$WB_REPO/scripts/validate_integration.py" --root "$WB_TEST_ROOT"

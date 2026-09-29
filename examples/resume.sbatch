@@ -8,10 +8,15 @@ export RAY_USAGE_STATS_ENABLED=0
 "$WB_ENV/bin/python" -B -c 'import os; from pathlib import Path; source=Path(os.environ["WB_SOURCE"]).resolve().parent; paths=[Path(os.environ[k]).resolve() for k in ("WB_CHECKPOINT","WB_OUTPUT_DIR")]; assert all(p!=source and source not in p.parents for p in paths), "Original task directory is read-only"'
 mkdir -p "$WB_OUTPUT_DIR"
 cd "$WB_OUTPUT_DIR"
-# Single-node continuation: Ray starts here and uses the CPUs in this allocation.
-# For multiple nodes, start an allocation-local Ray cluster before this command.
+# Adaptive continuation is intentionally single-node: later rounds add only a
+# small number of K points, so extra nodes normally remain idle.
+if [[ -n "${SLURM_JOB_NUM_NODES:-}" && "$SLURM_JOB_NUM_NODES" -ne 1 ]]; then
+  echo "Adaptive continuation requires exactly one node" >&2
+  exit 2
+fi
 "$WB_ENV/bin/python" -B "$WB_REPO/scripts/restart_run.py" \
   --config "$WB_REPO/examples/crse_config.py" --checkpoint "$WB_CHECKPOINT" \
   --recover --on-corrupt recompute --until-iteration 20 \
   --output "$WB_OUTPUT_DIR/CrSe_Qorb_GaoXiao" \
+  --progress-interval 300 \
   --partial-interval 900 --partial-output "$WB_OUTPUT_DIR/partial"
